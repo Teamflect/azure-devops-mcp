@@ -2,10 +2,8 @@
 // Licensed under the MIT License.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WorkItemExpand, WorkItemRelation } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces.js";
-import { QueryExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces.js";
 import { z } from "zod";
-import { batchApiVersion, markdownCommentsApiVersion, getEnumKeys, safeEnumConvert, encodeFormattedValue } from "../utils.js";
+import { batchApiVersion, markdownCommentsApiVersion, encodeFormattedValue } from "../utils.js";
 import { formatAuthorizationHeader } from "../shared/ado-auth.js";
 import type { AuthScheme } from "../shared/ado-auth.js";
 import type { ConnectionProvider, TokenProvider } from "../shared/mcp-context.js";
@@ -34,6 +32,17 @@ const WORKITEM_TOOLS = {
 };
 
 const FIXED_PROJECT_NAME = "Teamflect";
+const WORK_API_VERSION = "7.1";
+const WORK_API_PREVIEW_VERSION = "7.2-preview.1";
+const WIT_API_VERSION = "7.1";
+const WIT_QUERY_API_VERSION = "7.1-preview.2";
+const WORK_ITEM_EXPAND_ENUM = ["None", "Relations", "Fields", "Links", "All"] as const;
+const QUERY_EXPAND_ENUM = ["None", "Wiql", "Clauses", "All", "Minimal"] as const;
+
+interface WorkItemRelation {
+  rel?: string;
+  url?: string;
+}
 
 function getLinkTypeFromName(name: string) {
   switch (name.toLowerCase()) {
@@ -67,6 +76,101 @@ function getLinkTypeFromName(name: string) {
 }
 
 function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider, connectionProvider: ConnectionProvider, userAgentProvider: () => string, authScheme: AuthScheme) {
+  const getOrgUrl = async (extra?: Parameters<TokenProvider>[0]): Promise<string> => {
+    const connection = await connectionProvider(extra);
+    return connection.serverUrl.endsWith("/") ? connection.serverUrl.slice(0, -1) : connection.serverUrl;
+  };
+
+  const toQueryString = (query: Record<string, string | number | boolean | undefined>): string => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined) {
+        params.set(key, String(value));
+      }
+    }
+    return params.toString();
+  };
+
+  const requestAdo = async (
+    extra: Parameters<TokenProvider>[0],
+    path: string,
+    options: {
+      method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+      apiVersion?: string;
+      query?: Record<string, string | number | boolean | undefined>;
+      body?: unknown;
+      contentType?: string;
+      accept?: string;
+    } = {}
+  ): Promise<Response> => {
+    const orgUrl = await getOrgUrl(extra);
+    const token = await tokenProvider(extra);
+    const apiVersion = options.apiVersion ?? WIT_API_VERSION;
+    const query = toQueryString({
+      ...(options.query ?? {}),
+      "api-version": apiVersion,
+    });
+
+    const headers: Record<string, string> = {
+      "Authorization": formatAuthorizationHeader(token, authScheme),
+      "User-Agent": userAgentProvider(),
+      "Accept": options.accept ?? "application/json",
+    };
+
+    if (options.body !== undefined) {
+      headers["Content-Type"] = options.contentType ?? "application/json";
+    }
+
+    const response = await fetch(`${orgUrl}${path}?${query}`, {
+      method: options.method ?? "GET",
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`${response.status} ${response.statusText}: ${errorText}`);
+    }
+
+    return response;
+  };
+
+  const requestAdoJson = async <T>(
+    extra: Parameters<TokenProvider>[0],
+    path: string,
+    options: {
+      method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+      apiVersion?: string;
+      query?: Record<string, string | number | boolean | undefined>;
+      body?: unknown;
+      contentType?: string;
+      accept?: string;
+    } = {}
+  ): Promise<T> => {
+    const response = await requestAdo(extra, path, options);
+    return (await response.json()) as T;
+  };
+
+  const requestAdoText = async (
+    extra: Parameters<TokenProvider>[0],
+    path: string,
+    options: {
+      method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+      apiVersion?: string;
+      query?: Record<string, string | number | boolean | undefined>;
+      body?: unknown;
+      contentType?: string;
+      accept?: string;
+    } = {}
+  ): Promise<string> => {
+    const response = await requestAdo(extra, path, options);
+    return response.text();
+  };
+
+  const toExpandQuery = (value?: string): string | undefined => {
+    return value?.toLowerCase();
+  };
+
   server.tool(
     WORKITEM_TOOLS.list_backlogs,
     "Receive a list of backlogs for a given project and team.",
@@ -76,10 +180,9 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ team }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workApi = await connection.getWorkApi();
-        const teamContext = { project, team };
-        const backlogs = await workApi.getBacklogs(teamContext);
+        const backlogs = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/${encodeURIComponent(team)}/_apis/work/backlogs`, {
+          apiVersion: WORK_API_VERSION,
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(backlogs, null, 2) }],
@@ -104,11 +207,9 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ team, backlogId }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workApi = await connection.getWorkApi();
-        const teamContext = { project, team };
-
-        const workItems = await workApi.getBacklogLevelWorkItems(teamContext, backlogId);
+        const workItems = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/${encodeURIComponent(team)}/_apis/work/backlogs/${encodeURIComponent(backlogId)}/workItems`, {
+          apiVersion: WORK_API_VERSION,
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(workItems, null, 2) }],
@@ -134,10 +235,41 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ type, top, includeCompleted }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workApi = await connection.getWorkApi();
+        const conditions = ["[System.TeamProject] = @project"];
+        if (type === "assignedtome") {
+          conditions.push("[System.AssignedTo] = @Me");
+        }
+        if (type === "myactivity") {
+          conditions.push("[System.ChangedBy] = @Me");
+        }
+        if (!includeCompleted) {
+          conditions.push("[System.State] <> 'Closed'");
+          conditions.push("[System.State] <> 'Done'");
+          conditions.push("[System.State] <> 'Completed'");
+          conditions.push("[System.State] <> 'Removed'");
+        }
 
-        const workItems = await workApi.getPredefinedQueryResults(project, type, top, includeCompleted);
+        const wiqlQuery = `Select [System.Id] From WorkItems Where ${conditions.join(" And ")} Order By [System.ChangedDate] Desc`;
+        const wiqlResult = await requestAdoJson<{ workItems?: { id?: number }[] }>(extra, `/${encodeURIComponent(project)}/_apis/wit/wiql`, {
+          method: "POST",
+          apiVersion: WIT_API_VERSION,
+          body: { query: wiqlQuery },
+        });
+
+        const ids = (wiqlResult.workItems ?? [])
+          .map((item) => item.id)
+          .filter((id): id is number => id !== undefined)
+          .slice(0, top);
+        const workItems = ids.length
+          ? await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitemsbatch`, {
+              method: "POST",
+              apiVersion: WIT_API_VERSION,
+              body: {
+                ids,
+                fields: ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.AssignedTo", "System.ChangedDate", "System.CreatedDate"],
+              },
+            })
+          : { value: [], count: 0 };
 
         return {
           content: [{ type: "text", text: JSON.stringify(workItems, null, 2) }],
@@ -162,14 +294,16 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ ids, fields }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
         const defaultFields = ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.Parent", "System.Tags", "Microsoft.VSTS.Common.StackRank", "System.AssignedTo"];
 
         // If no fields are provided, use the default set of fields
         const fieldsToUse = !fields || fields.length === 0 ? defaultFields : fields;
 
-        const workitems = await workItemApi.getWorkItemsBatch({ ids, fields: fieldsToUse }, project);
+        const workitemsResponse = await requestAdoJson<{ count?: number; value?: { fields?: Record<string, unknown> }[] }>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitemsbatch`, {
+          method: "POST",
+          apiVersion: WIT_API_VERSION,
+          body: { ids, fields: fieldsToUse },
+        });
 
         // List of identity fields that need to be transformed from objects to formatted strings
         const identityFields = [
@@ -184,12 +318,13 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
 
         // Format identity fields to include displayName and uniqueName
         // Removing the identity object as the response. It's too much and not needed
-        if (workitems && Array.isArray(workitems)) {
+        const workitems = workitemsResponse.value ?? [];
+        if (Array.isArray(workitems)) {
           workitems.forEach((item) => {
             if (item.fields) {
               identityFields.forEach((fieldName) => {
                 if (item.fields && item.fields[fieldName] && typeof item.fields[fieldName] === "object") {
-                  const identityField = item.fields[fieldName];
+                  const identityField = item.fields[fieldName] as { displayName?: string; uniqueName?: string };
                   const name = identityField.displayName || "";
                   const email = identityField.uniqueName || "";
                   item.fields[fieldName] = `${name} <${email}>`.trim();
@@ -200,7 +335,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
         }
 
         return {
-          content: [{ type: "text", text: JSON.stringify(workitems, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(workitemsResponse, null, 2) }],
         };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -228,9 +363,14 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ id, fields, asOf, expand }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-        const workItem = await workItemApi.getWorkItem(id, fields, asOf, expand as unknown as WorkItemExpand, project);
+        const workItem = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitems/${id}`, {
+          apiVersion: WIT_API_VERSION,
+          query: {
+            fields: fields && fields.length > 0 ? fields.join(",") : undefined,
+            asOf: asOf ? asOf.toISOString() : undefined,
+            $expand: toExpandQuery(expand),
+          },
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(workItem, null, 2) }],
@@ -256,9 +396,12 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ workItemId, top }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-        const comments = await workItemApi.getComments(project, workItemId, top);
+        const comments = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workItems/${workItemId}/comments`, {
+          apiVersion: markdownCommentsApiVersion,
+          query: {
+            $top: top,
+          },
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(comments, null, 2) }],
@@ -284,30 +427,15 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ workItemId, comment, format }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const orgUrl = connection.serverUrl;
-        const accessToken = await tokenProvider(extra);
-
-        const body = {
-          text: comment,
-        };
-
         const formatParameter = format === "markdown" ? 0 : 1;
-        const response = await fetch(`${orgUrl}/${project}/_apis/wit/workItems/${workItemId}/comments?format=${formatParameter}&api-version=${markdownCommentsApiVersion}`, {
+        const comments = await requestAdoText(extra, `/${encodeURIComponent(project)}/_apis/wit/workItems/${workItemId}/comments`, {
           method: "POST",
-          headers: {
-            "Authorization": formatAuthorizationHeader(accessToken, authScheme),
-            "Content-Type": "application/json",
-            "User-Agent": userAgentProvider(),
+          apiVersion: markdownCommentsApiVersion,
+          query: {
+            format: formatParameter,
           },
-          body: JSON.stringify(body),
+          body: { text: comment },
         });
-
-        if (!response.ok) {
-          throw new Error(`Failed to add a work item comment: ${response.statusText}}`);
-        }
-
-        const comments = await response.text();
 
         return {
           content: [{ type: "text", text: comments }],
@@ -329,22 +457,28 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
       workItemId: z.number().describe("The ID of the work item to retrieve revisions for."),
       top: z.number().default(50).describe("Optional number of revisions to retrieve. If not provided, all revisions will be returned."),
       skip: z.number().optional().describe("Optional number of revisions to skip for pagination. Defaults to 0."),
-      expand: z
-        .enum(getEnumKeys(WorkItemExpand) as [string, ...string[]])
-        .default("None")
-        .optional()
-        .describe("Optional expand parameter to include additional details. Defaults to 'None'."),
+      expand: z.enum(WORK_ITEM_EXPAND_ENUM).default("None").optional().describe("Optional expand parameter to include additional details. Defaults to 'None'."),
     },
     async ({ workItemId, top, skip, expand }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-        const revisions = await workItemApi.getRevisions(workItemId, top, skip, safeEnumConvert(WorkItemExpand, expand), project);
+        const revisionsResponse = await requestAdoJson<{ count?: number; value?: { fields?: Record<string, unknown> }[] }>(
+          extra,
+          `/${encodeURIComponent(project)}/_apis/wit/workItems/${workItemId}/revisions`,
+          {
+            apiVersion: WIT_API_VERSION,
+            query: {
+              $top: top,
+              $skip: skip,
+              $expand: toExpandQuery(expand),
+            },
+          }
+        );
 
         // Dynamically clean up identity objects in revision fields
         // Identity objects typically have properties like displayName, url, _links, id, uniqueName, imageUrl, descriptor
-        if (revisions && Array.isArray(revisions)) {
+        const revisions = revisionsResponse.value ?? [];
+        if (Array.isArray(revisions)) {
           revisions.forEach((revision) => {
             if (revision.fields) {
               Object.keys(revision.fields).forEach((fieldName) => {
@@ -358,12 +492,13 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
                   ("url" in fieldValue || "_links" in fieldValue || "uniqueName" in fieldValue)
                 ) {
                   // Remove unwanted properties from identity objects
-                  delete fieldValue.url;
-                  delete fieldValue._links;
-                  delete fieldValue.id;
-                  delete fieldValue.uniqueName;
-                  delete fieldValue.imageUrl;
-                  delete fieldValue.descriptor;
+                  const identityField = fieldValue as Record<string, unknown>;
+                  delete identityField.url;
+                  delete identityField._links;
+                  delete identityField.id;
+                  delete identityField.uniqueName;
+                  delete identityField.imageUrl;
+                  delete identityField.descriptor;
                 }
               });
             }
@@ -371,7 +506,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
         }
 
         return {
-          content: [{ type: "text", text: JSON.stringify(revisions, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(revisionsResponse, null, 2) }],
         };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -402,9 +537,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ parentId, workItemType, items }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const orgUrl = connection.serverUrl;
-        const accessToken = await tokenProvider(extra);
+        const orgUrl = await getOrgUrl(extra);
 
         if (items.length > 50) {
           return {
@@ -442,7 +575,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
               path: "/relations/-",
               value: {
                 rel: "System.LinkTypes.Hierarchy-Reverse",
-                url: `${connection.serverUrl}/${project}/_apis/wit/workItems/${parentId}`,
+                url: `${orgUrl}/${project}/_apis/wit/workItems/${parentId}`,
               },
             },
           ];
@@ -487,21 +620,11 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           };
         });
 
-        const response = await fetch(`${orgUrl}/_apis/wit/$batch?api-version=${batchApiVersion}`, {
+        const result = await requestAdoJson<unknown>(extra, `/_apis/wit/$batch`, {
           method: "PATCH",
-          headers: {
-            "Authorization": formatAuthorizationHeader(accessToken, authScheme),
-            "Content-Type": "application/json",
-            "User-Agent": userAgentProvider(),
-          },
-          body: JSON.stringify(body),
+          apiVersion: batchApiVersion,
+          body,
         });
-
-        if (!response.ok) {
-          throw new Error(`Failed to update work items in batch: ${response.statusText}`);
-        }
-
-        const result = await response.json();
 
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -529,9 +652,6 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     },
     async ({ projectId, repositoryId, pullRequestId, workItemId, pullRequestProjectId }, extra) => {
       try {
-        const connection = await connectionProvider(extra);
-        const workItemTrackingApi = await connection.getWorkItemTrackingApi();
-
         // Create artifact link relation using vstfs format
         // Format: vstfs:///Git/PullRequestId/{project}/{repositoryId}/{pullRequestId}
         const artifactProjectId = pullRequestProjectId && pullRequestProjectId.trim() !== "" ? pullRequestProjectId : projectId;
@@ -553,8 +673,13 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           },
         ];
 
-        // Use the WorkItem API to update the work item with the new relation
-        const workItem = await workItemTrackingApi.updateWorkItem({}, patchDocument, workItemId, projectId);
+        // Use REST update to add artifact link relation.
+        const workItem = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(projectId)}/_apis/wit/workitems/${workItemId}`, {
+          method: "PATCH",
+          apiVersion: WIT_API_VERSION,
+          contentType: "application/json-patch+json",
+          body: patchDocument,
+        });
 
         if (!workItem) {
           return { content: [{ type: "text", text: "Work item update failed" }], isError: true };
@@ -597,11 +722,10 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ team, iterationId }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workApi = await connection.getWorkApi();
-
-        //get the work items for the current iteration
-        const workItems = await workApi.getIterationWorkItems({ project, team }, iterationId);
+        const teamSegment = team ? `/${encodeURIComponent(team)}` : "";
+        const workItems = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}${teamSegment}/_apis/work/teamsettings/iterations/${encodeURIComponent(iterationId)}/workitems`, {
+          apiVersion: WORK_API_PREVIEW_VERSION,
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(workItems, null, 2) }],
@@ -638,16 +762,18 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     },
     async ({ id, updates }, extra) => {
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-
         // Convert operation names to lowercase for API
         const apiUpdates = updates.map((update) => ({
           ...update,
           op: update.op,
         }));
 
-        const updatedWorkItem = await workItemApi.updateWorkItem(null, apiUpdates, id);
+        const updatedWorkItem = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(FIXED_PROJECT_NAME)}/_apis/wit/workitems/${id}`, {
+          method: "PATCH",
+          apiVersion: WIT_API_VERSION,
+          contentType: "application/json-patch+json",
+          body: apiUpdates,
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(updatedWorkItem, null, 2) }],
@@ -671,10 +797,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ workItemType }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-
-        const workItemTypeInfo = await workItemApi.getWorkItemType(project, workItemType);
+        const workItemTypeInfo = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitemtypes/${encodeURIComponent(workItemType)}`, { apiVersion: WIT_API_VERSION });
 
         return {
           content: [{ type: "text", text: JSON.stringify(workItemTypeInfo, null, 2) }],
@@ -707,9 +830,6 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ workItemType, fields }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-
         const document = fields.map(({ name, value, format }) => ({
           op: "add",
           path: `/fields/${name}`,
@@ -729,7 +849,12 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           }
         });
 
-        const newWorkItem = await workItemApi.createWorkItem(null, document, project, workItemType);
+        const newWorkItem = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}`, {
+          method: "PATCH",
+          apiVersion: WIT_API_VERSION,
+          contentType: "application/json-patch+json",
+          body: document,
+        });
 
         if (!newWorkItem) {
           return { content: [{ type: "text", text: "Work item was not created" }], isError: true };
@@ -754,10 +879,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     "Get a query by its ID or path.",
     {
       query: z.string().describe("The ID or path of the query to retrieve."),
-      expand: z
-        .enum(getEnumKeys(QueryExpand) as [string, ...string[]])
-        .optional()
-        .describe("Optional expand parameter to include additional details in the response. Defaults to 'None'."),
+      expand: z.enum(QUERY_EXPAND_ENUM).optional().describe("Optional expand parameter to include additional details in the response. Defaults to 'None'."),
       depth: z.number().default(0).describe("Optional depth parameter to specify how deep to expand the query. Defaults to 0."),
       includeDeleted: z.boolean().default(false).describe("Whether to include deleted items in the query results. Defaults to false."),
       useIsoDateFormat: z.boolean().default(false).describe("Whether to use ISO date format in the response. Defaults to false."),
@@ -765,10 +887,21 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ query, expand, depth, includeDeleted, useIsoDateFormat }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
+        const encodedQuery = query
+          .split("/")
+          .filter((segment) => segment.length > 0)
+          .map((segment) => encodeURIComponent(segment))
+          .join("/");
 
-        const queryDetails = await workItemApi.getQuery(project, query, safeEnumConvert(QueryExpand, expand), depth, includeDeleted, useIsoDateFormat);
+        const queryDetails = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/queries/${encodedQuery}`, {
+          apiVersion: WIT_QUERY_API_VERSION,
+          query: {
+            $expand: toExpandQuery(expand),
+            depth,
+            includeDeleted,
+            useIsoDateFormat,
+          },
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(queryDetails, null, 2) }],
@@ -796,10 +929,14 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ id, team, timePrecision, top, responseType }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-        const teamContext = { project, team };
-        const queryResult = await workItemApi.queryById(id, teamContext, timePrecision, top);
+        const teamSegment = team ? `/${encodeURIComponent(team)}` : "";
+        const queryResult = await requestAdoJson<{ workItems?: { id?: number }[] }>(extra, `/${encodeURIComponent(project)}${teamSegment}/_apis/wit/wiql/${encodeURIComponent(id)}`, {
+          apiVersion: WIT_QUERY_API_VERSION,
+          query: {
+            timePrecision,
+            $top: top,
+          },
+        });
 
         // If ids mode, extract and return only the IDs
         if (responseType === "ids") {
@@ -841,10 +978,6 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     },
     async ({ updates }, extra) => {
       try {
-        const connection = await connectionProvider(extra);
-        const orgUrl = connection.serverUrl;
-        const accessToken = await tokenProvider(extra);
-
         // Extract unique IDs from the updates array
         const uniqueIds = Array.from(new Set(updates.map((update) => update.id)));
 
@@ -877,21 +1010,11 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           };
         });
 
-        const response = await fetch(`${orgUrl}/_apis/wit/$batch?api-version=${batchApiVersion}`, {
+        const result = await requestAdoJson<unknown>(extra, `/_apis/wit/$batch`, {
           method: "PATCH",
-          headers: {
-            "Authorization": formatAuthorizationHeader(accessToken, authScheme),
-            "Content-Type": "application/json",
-            "User-Agent": userAgentProvider(),
-          },
-          body: JSON.stringify(body),
+          apiVersion: batchApiVersion,
+          body,
         });
-
-        if (!response.ok) {
-          throw new Error(`Failed to update work items in batch: ${response.statusText}`);
-        }
-
-        const result = await response.json();
 
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -929,9 +1052,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ updates }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const orgUrl = connection.serverUrl;
-        const accessToken = await tokenProvider(extra);
+        const orgUrl = await getOrgUrl(extra);
 
         // Extract unique IDs from the updates array
         const uniqueIds = Array.from(new Set(updates.map((update) => update.id)));
@@ -957,21 +1078,11 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
             })),
         }));
 
-        const response = await fetch(`${orgUrl}/_apis/wit/$batch?api-version=${batchApiVersion}`, {
+        const result = await requestAdoJson<unknown>(extra, `/_apis/wit/$batch`, {
           method: "PATCH",
-          headers: {
-            "Authorization": formatAuthorizationHeader(accessToken, authScheme),
-            "Content-Type": "application/json",
-            "User-Agent": userAgentProvider(),
-          },
-          body: JSON.stringify(body),
+          apiVersion: batchApiVersion,
+          body,
         });
-
-        if (!response.ok) {
-          throw new Error(`Failed to update work items in batch: ${response.statusText}`);
-        }
-
-        const result = await response.json();
 
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -1002,9 +1113,12 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ id, type, url }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemApi = await connection.getWorkItemTrackingApi();
-        const workItem = await workItemApi.getWorkItem(id, undefined, undefined, WorkItemExpand.Relations, project);
+        const workItem = await requestAdoJson<{ relations?: WorkItemRelation[] }>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitems/${id}`, {
+          apiVersion: WIT_API_VERSION,
+          query: {
+            $expand: "relations",
+          },
+        });
         const relations: WorkItemRelation[] = workItem.relations ?? [];
         const linkType = getLinkTypeFromName(type);
 
@@ -1036,7 +1150,12 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           path: `/relations/${idx}`,
         }));
 
-        const updatedWorkItem = await workItemApi.updateWorkItem(null, apiUpdates, id, project);
+        const updatedWorkItem = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitems/${id}`, {
+          method: "PATCH",
+          apiVersion: WIT_API_VERSION,
+          contentType: "application/json-patch+json",
+          body: apiUpdates,
+        });
 
         return {
           content: [
@@ -1106,9 +1225,6 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
     async ({ workItemId, artifactUri, projectId, repositoryId, branchName, commitId, pullRequestId, buildId, linkType, comment }, extra) => {
       const project = FIXED_PROJECT_NAME;
       try {
-        const connection = await connectionProvider(extra);
-        const workItemTrackingApi = await connection.getWorkItemTrackingApi();
-
         let finalArtifactUri: string;
 
         if (artifactUri) {
@@ -1183,8 +1299,13 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           },
         ];
 
-        // Use the WorkItem API to update the work item with the new relation
-        const workItem = await workItemTrackingApi.updateWorkItem({}, patchDocument, workItemId, project);
+        // Use REST update to add artifact link relation.
+        const workItem = await requestAdoJson<unknown>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitems/${workItemId}`, {
+          method: "PATCH",
+          apiVersion: WIT_API_VERSION,
+          contentType: "application/json-patch+json",
+          body: patchDocument,
+        });
 
         if (!workItem) {
           return { content: [{ type: "text", text: "Work item update failed" }], isError: true };
