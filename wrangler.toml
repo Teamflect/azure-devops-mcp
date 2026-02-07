@@ -8,3 +8,18 @@ ADO_ORG = "teamblee-devops"
 MCP_HTTP_PATH = "/mcp"
 ADO_AUTH_TYPE = "envvar" # per-request PAT
 # keep MCP_STATEFUL unset (or "false") unless you add Durable Objects
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
