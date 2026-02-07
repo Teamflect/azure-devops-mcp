@@ -3,21 +3,24 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getBearerHandler, getPersonalAccessTokenHandler, WebApi } from "azure-devops-node-api";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
 import { configureAllTools } from "./tools.js";
 import { UserAgentComposer } from "./useragent.js";
 import { packageVersion } from "./version.js";
 import { logger } from "./logger.js";
-import { parseAuthorizationHeader, resolveAuthScheme } from "./shared/ado-auth.js";
+import { resolveAuthScheme } from "./shared/ado-auth.js";
 import type { ConnectionProvider, McpRequestExtra, TokenProvider } from "./shared/mcp-context.js";
 import { StreamableHttpFetchTransport } from "./transport/streamable-http-fetch.js";
+import { createClientSecretTokenProvider } from "./shared/client-secret-auth.js";
 
 export interface Env {
   ADO_ORG: string;
   ADO_AUTH_TYPE?: string;
   ADO_MCP_AUTH_TOKEN?: string;
   ADO_PAT?: string;
+  ADO_TENANT_ID?: string;
+  ADO_CLIENT_ID?: string;
+  ADO_CLIENT_SECRET?: string;
   MCP_HTTP_PATH?: string;
   MCP_ENABLE_JSON_RESPONSE?: string;
   MCP_STATEFUL?: string;
@@ -28,7 +31,6 @@ export interface Env {
 
 type WorkerState = {
   transport: StreamableHttpFetchTransport;
-  authScheme: "bearer" | "pat";
   authenticationType: string;
   path: string;
 };
@@ -59,6 +61,10 @@ async function initWorker(env: Env): Promise<WorkerState> {
 
   const authenticationType = getEnvValue(env, "ADO_AUTH_TYPE") ?? (getEnvValue(env, "ADO_MCP_AUTH_TOKEN") || getEnvValue(env, "ADO_PAT") ? "envvar" : "pat");
   const authScheme = resolveAuthScheme(authenticationType);
+  const tenantId = getEnvValue(env, "ADO_TENANT_ID");
+  const clientId = getEnvValue(env, "ADO_CLIENT_ID");
+  const clientSecret = getEnvValue(env, "ADO_CLIENT_SECRET");
+  const clientSecretTokenProvider = authenticationType === "clientsecret" && tenantId && clientId && clientSecret ? createClientSecretTokenProvider(tenantId, clientId, clientSecret) : undefined;
 
   const tokenProvider: TokenProvider = async (extra?: McpRequestExtra) => {
     const tokenFromRequest = extra?.authInfo?.token;
@@ -71,6 +77,18 @@ async function initWorker(env: Env): Promise<WorkerState> {
         throw new Error("Missing ADO_MCP_AUTH_TOKEN/ADO_PAT for envvar authentication.");
       }
       return token;
+    }
+    if (authenticationType === "clientsecret") {
+      if (!clientSecretTokenProvider) {
+        throw new Error("Client secret authentication requires ADO_TENANT_ID, ADO_CLIENT_ID, and ADO_CLIENT_SECRET.");
+      }
+      return clientSecretTokenProvider();
+    }
+    if (authenticationType === "pat") {
+      const token = getEnvValue(env, "ADO_MCP_AUTH_TOKEN") ?? getEnvValue(env, "ADO_PAT");
+      if (token) {
+        return token;
+      }
     }
     throw new Error("Missing Authorization header for PAT authentication.");
   };
@@ -114,7 +132,7 @@ async function initWorker(env: Env): Promise<WorkerState> {
 
   const path = getEnvValue(env, "MCP_HTTP_PATH") ?? "/mcp";
 
-  cachedState = { transport, authScheme, authenticationType, path };
+  cachedState = { transport, authenticationType, path };
   logger.info("Cloudflare MCP worker initialized", {
     organization: orgName,
     auth: authenticationType,
@@ -131,23 +149,8 @@ export default {
       return new Response("Not Found", { status: 404 });
     }
 
-    const token = parseAuthorizationHeader(request.headers.get("authorization"));
-    if (state.authenticationType === "pat" && !token) {
-      return new Response("Unauthorized", { status: 401, headers: { "WWW-Authenticate": "Bearer" } });
-    }
-
-    let authInfo: AuthInfo | undefined;
-    if (token) {
-      authInfo = {
-        token,
-        clientId: "http",
-        scopes: [],
-        extra: { scheme: state.authScheme },
-      };
-    }
-
     try {
-      return await state.transport.handleRequest(request, authInfo);
+      return await state.transport.handleRequest(request);
     } catch (error) {
       logger.error("HTTP transport error", error);
       return new Response("Internal Server Error", { status: 500 });

@@ -42,3 +42,41 @@ export function parseAuthorizationHeader(headerValue: string | null | undefined)
   }
   return undefined;
 }
+
+export function parseBearerAuthorizationToken(headerValue: string | null | undefined): string | undefined {
+  if (!headerValue) {
+    return undefined;
+  }
+  const [rawScheme, rawToken] = headerValue.split(" ");
+  if (!rawScheme || !rawToken) {
+    return undefined;
+  }
+  const scheme = rawScheme.toLowerCase();
+  if (scheme === "bearer" || scheme === "pat") {
+    return rawToken.trim();
+  }
+  return undefined;
+}
+
+export function parseBasicAuthCredentials(headerValue: string | null | undefined): { username: string; password: string } | undefined {
+  if (!headerValue) {
+    return undefined;
+  }
+  const [rawScheme, rawToken] = headerValue.split(" ");
+  if (!rawScheme || !rawToken || rawScheme.toLowerCase() !== "basic") {
+    return undefined;
+  }
+  try {
+    const decoded = Buffer.from(rawToken, "base64").toString("utf8");
+    const separatorIndex = decoded.indexOf(":");
+    if (separatorIndex < 0) {
+      return undefined;
+    }
+    return {
+      username: decoded.slice(0, separatorIndex),
+      password: decoded.slice(separatorIndex + 1),
+    };
+  } catch {
+    return undefined;
+  }
+}

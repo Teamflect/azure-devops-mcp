@@ -160,7 +160,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ADO_ORG = "contoso"
 MCP_HTTP_PATH = "/mcp"
-ADO_AUTH_TYPE = "pat" # or "envvar" for server-level PAT
+ADO_AUTH_TYPE = "envvar"
 ```
 
 Then set a secret PAT:
@@ -169,7 +169,7 @@ Then set a secret PAT:
 wrangler secret put ADO_PAT
 ```
 
-Clients should send `Authorization: Bearer <PAT>` to `/mcp`.
+No client `Authorization` header is required. The server uses the PAT from env vars/secrets to call Azure DevOps.
 
 ## ✅ Tooling Scope
 

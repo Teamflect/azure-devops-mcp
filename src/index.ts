@@ -6,7 +6,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { getBearerHandler, getPersonalAccessTokenHandler, WebApi } from "azure-devops-node-api";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -21,7 +20,7 @@ import { configureAllTools } from "./tools.js";
 import { UserAgentComposer } from "./useragent.js";
 import { packageVersion } from "./version.js";
 import { DomainsManager } from "./shared/domains.js";
-import { parseAuthorizationHeader, resolveAuthScheme } from "./shared/ado-auth.js";
+import { resolveAuthScheme } from "./shared/ado-auth.js";
 import type { ConnectionProvider, McpRequestExtra, TokenProvider } from "./shared/mcp-context.js";
 
 function isGitHubCodespaceEnv(): boolean {
@@ -62,12 +61,12 @@ const argv = yargs(hideBin(process.argv))
     alias: "a",
     describe: "Type of authentication to use",
     type: "string",
-    choices: ["interactive", "azcli", "env", "envvar", "pat"],
+    choices: ["interactive", "azcli", "env", "envvar", "pat", "clientsecret"],
     default: defaultAuthenticationType,
   })
   .option("tenant", {
     alias: "t",
-    describe: "Azure tenant ID (optional, applied when using 'interactive' and 'azcli' type of authentication)",
+    describe: "Azure tenant ID (optional; used by interactive/azcli and as fallback for clientsecret auth)",
     type: "string",
   })
   .option("transport", {
@@ -179,7 +178,11 @@ async function main() {
       return tokenFromRequest;
     }
     if (argv.authentication === "pat") {
-      throw new Error("Missing Authorization header for PAT authentication.");
+      const token = process.env["ADO_MCP_AUTH_TOKEN"];
+      if (token) {
+        return token;
+      }
+      throw new Error("Missing Authorization header for PAT authentication and ADO_MCP_AUTH_TOKEN env var.");
     }
     return authenticator();
   };
@@ -208,23 +211,7 @@ async function main() {
           res.writeHead(404).end("Not Found");
           return;
         }
-
-        const token = parseAuthorizationHeader(req.headers.authorization);
-        if (argv.authentication === "pat" && !token) {
-          res.writeHead(401, { "WWW-Authenticate": "Bearer" }).end("Unauthorized");
-          return;
-        }
-
-        if (token) {
-          (req as typeof req & { auth?: AuthInfo }).auth = {
-            token,
-            clientId: "http",
-            scopes: [],
-            extra: { scheme: authScheme },
-          };
-        }
-
-        await transport.handleRequest(req as typeof req & { auth?: AuthInfo }, res);
+        await transport.handleRequest(req, res);
       } catch (error) {
         logger.error("HTTP transport error", error);
         res.writeHead(500).end("Internal Server Error");

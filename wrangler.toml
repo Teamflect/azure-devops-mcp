@@ -6,5 +6,5 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ADO_ORG = "teamblee-devops"
 MCP_HTTP_PATH = "/mcp"
-ADO_AUTH_TYPE = "pat" # per-request PAT
+ADO_AUTH_TYPE = "envvar" # per-request PAT
 # keep MCP_STATEFUL unset (or "false") unless you add Durable Objects

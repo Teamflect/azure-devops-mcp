@@ -5,6 +5,7 @@ import { AzureCliCredential, ChainedTokenCredential, DefaultAzureCredential, Tok
 import { AccountInfo, AuthenticationResult, PublicClientApplication } from "@azure/msal-node";
 import open from "open";
 import { logger } from "./logger.js";
+import { createClientSecretTokenProvider } from "./shared/client-secret-auth.js";
 
 const scopes = ["499b84ac-1321-427f-aa17-267ca6975798/.default"];
 
@@ -97,6 +98,19 @@ function createAuthenticator(type: string, tenantId?: string): () => Promise<str
       return async () => {
         throw new Error("PAT authentication requires an HTTP Authorization header when using Streamable HTTP.");
       };
+
+    case "clientsecret": {
+      const configuredTenantId = process.env["ADO_TENANT_ID"] ?? tenantId;
+      const clientId = process.env["ADO_CLIENT_ID"];
+      const clientSecret = process.env["ADO_CLIENT_SECRET"];
+
+      if (!configuredTenantId || !clientId || !clientSecret) {
+        throw new Error("Client secret authentication requires ADO_TENANT_ID (or --tenant), ADO_CLIENT_ID, and ADO_CLIENT_SECRET environment variables.");
+      }
+
+      logger.debug(`Authenticator: Using OAuth client credentials (tenant=${configuredTenantId}, clientId=${clientId})`);
+      return createClientSecretTokenProvider(configuredTenantId, clientId, clientSecret);
+    }
 
     case "azcli":
     case "env":
