@@ -26,18 +26,15 @@ if (logLevel && ["verbose", "debug", "info", "warning", "error"].includes(logLev
  * we log to stderr to avoid interfering with the MCP protocol.
  */
 
-const hasStderr = typeof process !== "undefined" && !!process.stderr && typeof process.stderr.write === "function";
-
 export const logger = winston.createLogger({
   level: (typeof process !== "undefined" && process.env?.LOG_LEVEL) || "info",
   format: winston.format.combine(winston.format.timestamp(), winston.format.errors({ stack: true }), winston.format.json()),
-  transports: hasStderr
-    ? [
-        new winston.transports.Stream({
-          stream: process.stderr,
-        }),
-      ]
-    : [new winston.transports.Console()],
+  transports: [
+    // Keep MCP stdout clean by routing all logs to stderr.
+    new winston.transports.Console({
+      stderrLevels: ["error", "warn", "info", "http", "verbose", "debug", "silly"],
+    }),
+  ],
   // Prevent Winston from exiting on error
   exitOnError: false,
 });
