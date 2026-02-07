@@ -3,13 +3,15 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apiVersion, getEnumKeys, safeEnumConvert } from "../utils.js";
-import { WebApi } from "azure-devops-node-api";
 import { BuildQueryOrder, DefinitionQueryOrder } from "azure-devops-node-api/interfaces/BuildInterfaces.js";
 import { z } from "zod";
 import { StageUpdateType } from "azure-devops-node-api/interfaces/BuildInterfaces.js";
 import { ConfigurationType, RepositoryType } from "azure-devops-node-api/interfaces/PipelinesInterfaces.js";
 import { mkdirSync, createWriteStream } from "fs";
 import { join, resolve } from "path";
+import { formatAuthorizationHeader } from "../shared/ado-auth.js";
+import type { AuthScheme } from "../shared/ado-auth.js";
+import type { ConnectionProvider, TokenProvider } from "../shared/mcp-context.js";
 
 const PIPELINE_TOOLS = {
   pipelines_get_builds: "pipelines_get_builds",
@@ -28,7 +30,7 @@ const PIPELINE_TOOLS = {
   pipelines_download_artifact: "pipelines_download_artifact",
 };
 
-function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
+function configurePipelineTools(server: McpServer, tokenProvider: TokenProvider, connectionProvider: ConnectionProvider, userAgentProvider: () => string, authScheme: AuthScheme) {
   server.tool(
     PIPELINE_TOOLS.pipelines_get_build_definitions,
     "Retrieves a list of build definitions for a given project.",
@@ -54,26 +56,29 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       processType: z.number().optional().describe("Process type to filter build definitions"),
       yamlFilename: z.string().optional().describe("YAML filename to filter build definitions"),
     },
-    async ({
-      project,
-      repositoryId,
-      repositoryType,
-      name,
-      path,
-      queryOrder,
-      top,
-      continuationToken,
-      minMetricsTime,
-      definitionIds,
-      builtAfter,
-      notBuiltAfter,
-      includeAllProperties,
-      includeLatestBuilds,
-      taskIdFilter,
-      processType,
-      yamlFilename,
-    }) => {
-      const connection = await connectionProvider();
+    async (
+      {
+        project,
+        repositoryId,
+        repositoryType,
+        name,
+        path,
+        queryOrder,
+        top,
+        continuationToken,
+        minMetricsTime,
+        definitionIds,
+        builtAfter,
+        notBuiltAfter,
+        includeAllProperties,
+        includeLatestBuilds,
+        taskIdFilter,
+        processType,
+        yamlFilename,
+      },
+      extra
+    ) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const buildDefinitions = await buildApi.getDefinitions(
         project,
@@ -119,8 +124,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       repositoryId: z.string().optional().describe("The ID of the repository."),
       repositoryConnectionId: z.string().optional().describe("The service connection ID for GitHub repositories. Not required for Azure Repos Git."),
     },
-    async ({ project, name, folder, yamlPath, repositoryType, repositoryName, repositoryId, repositoryConnectionId }) => {
-      const connection = await connectionProvider();
+    async ({ project, name, folder, yamlPath, repositoryType, repositoryName, repositoryId, repositoryConnectionId }, extra) => {
+      const connection = await connectionProvider(extra);
       const pipelinesApi = await connection.getPipelinesApi();
 
       const repositoryTypeEnumValue = safeEnumConvert(RepositoryType, repositoryType);
@@ -167,8 +172,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       project: z.string().describe("Project ID or name to get the build definition revisions for"),
       definitionId: z.number().describe("ID of the build definition to get revisions for"),
     },
-    async ({ project, definitionId }) => {
-      const connection = await connectionProvider();
+    async ({ project, definitionId }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const revisions = await buildApi.getDefinitionRevisions(project, definitionId);
 
@@ -208,30 +213,33 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       repositoryId: z.string().optional().describe("Repository ID to filter builds"),
       repositoryType: z.enum(["TfsGit", "GitHub", "BitbucketCloud"]).optional().describe("Type of repository to filter builds"),
     },
-    async ({
-      project,
-      definitions,
-      queues,
-      buildNumber,
-      minTime,
-      maxTime,
-      requestedFor,
-      reasonFilter,
-      statusFilter,
-      resultFilter,
-      tagFilters,
-      properties,
-      top,
-      continuationToken,
-      maxBuildsPerDefinition,
-      deletedFilter,
-      queryOrder,
-      branchName,
-      buildIds,
-      repositoryId,
-      repositoryType,
-    }) => {
-      const connection = await connectionProvider();
+    async (
+      {
+        project,
+        definitions,
+        queues,
+        buildNumber,
+        minTime,
+        maxTime,
+        requestedFor,
+        reasonFilter,
+        statusFilter,
+        resultFilter,
+        tagFilters,
+        properties,
+        top,
+        continuationToken,
+        maxBuildsPerDefinition,
+        deletedFilter,
+        queryOrder,
+        branchName,
+        buildIds,
+        repositoryId,
+        repositoryType,
+      },
+      extra
+    ) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const builds = await buildApi.getBuilds(
         project,
@@ -270,8 +278,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       project: z.string().describe("Project ID or name to get the build log for"),
       buildId: z.number().describe("ID of the build to get the log for"),
     },
-    async ({ project, buildId }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const logs = await buildApi.getBuildLogs(project, buildId);
 
@@ -291,8 +299,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       startLine: z.number().optional().describe("Starting line number for the log content, defaults to 0"),
       endLine: z.number().optional().describe("Ending line number for the log content, defaults to the end of the log"),
     },
-    async ({ project, buildId, logId, startLine, endLine }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId, logId, startLine, endLine }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const logLines = await buildApi.getBuildLogLines(project, buildId, logId, startLine, endLine);
 
@@ -312,8 +320,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       top: z.number().default(100).describe("Number of changes to retrieve, defaults to 100"),
       includeSourceChange: z.boolean().optional().describe("Whether to include source changes in the results, defaults to false"),
     },
-    async ({ project, buildId, continuationToken, top, includeSourceChange }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId, continuationToken, top, includeSourceChange }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const changes = await buildApi.getBuildChanges(project, buildId, continuationToken, top, includeSourceChange);
 
@@ -331,8 +339,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       pipelineId: z.number().describe("ID of the pipeline to run"),
       runId: z.number().describe("ID of the run to get"),
     },
-    async ({ project, pipelineId, runId }) => {
-      const connection = await connectionProvider();
+    async ({ project, pipelineId, runId }, extra) => {
+      const connection = await connectionProvider(extra);
       const pipelinesApi = await connection.getPipelinesApi();
       const pipelineRun = await pipelinesApi.getRun(project, pipelineId, runId);
 
@@ -349,8 +357,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       project: z.string().describe("Project ID or name to run the build in"),
       pipelineId: z.number().describe("ID of the pipeline to run"),
     },
-    async ({ project, pipelineId }) => {
-      const connection = await connectionProvider();
+    async ({ project, pipelineId }, extra) => {
+      const connection = await connectionProvider(extra);
       const pipelinesApi = await connection.getPipelinesApi();
       const pipelineRuns = await pipelinesApi.listRuns(project, pipelineId);
 
@@ -419,12 +427,12 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       variables: z.record(z.string(), variableSchema).optional().describe("A dictionary of variables to pass to the pipeline."),
       yamlOverride: z.string().optional().describe("YAML override for the pipeline run."),
     },
-    async ({ project, pipelineId, pipelineVersion, previewRun, resources, stagesToSkip, templateParameters, variables, yamlOverride }) => {
+    async ({ project, pipelineId, pipelineVersion, previewRun, resources, stagesToSkip, templateParameters, variables, yamlOverride }, extra) => {
       if (!previewRun && yamlOverride) {
         throw new Error("Parameter 'yamlOverride' can only be specified together with parameter 'previewRun'.");
       }
 
-      const connection = await connectionProvider();
+      const connection = await connectionProvider(extra);
       const pipelinesApi = await connection.getPipelinesApi();
       const runRequest = {
         previewRun: previewRun,
@@ -457,8 +465,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       project: z.string().describe("Project ID or name to get the build status for"),
       buildId: z.number().describe("ID of the build to get the status for"),
     },
-    async ({ project, buildId }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const build = await buildApi.getBuildReport(project, buildId);
 
@@ -478,11 +486,11 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       status: z.enum(getEnumKeys(StageUpdateType) as [string, ...string[]]).describe("New status for the stage"),
       forceRetryAllJobs: z.boolean().default(false).describe("Whether to force retry all jobs in the stage."),
     },
-    async ({ project, buildId, stageName, status, forceRetryAllJobs }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId, stageName, status, forceRetryAllJobs }, extra) => {
+      const connection = await connectionProvider(extra);
       const orgUrl = connection.serverUrl;
       const endpoint = `${orgUrl}/${project}/_apis/build/builds/${buildId}/stages/${stageName}?api-version=${apiVersion}`;
-      const token = await tokenProvider();
+      const token = await tokenProvider(extra);
 
       const body = {
         forceRetryAllJobs: forceRetryAllJobs,
@@ -493,7 +501,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
+          "Authorization": formatAuthorizationHeader(token, authScheme),
           "User-Agent": userAgentProvider(),
         },
         body: JSON.stringify(body),
@@ -519,8 +527,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       project: z.string().describe("The name or ID of the project."),
       buildId: z.number().describe("The ID of the build."),
     },
-    async ({ project, buildId }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const artifacts = await buildApi.getArtifacts(project, buildId);
 
@@ -539,8 +547,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       artifactName: z.string().describe("The name of the artifact to download."),
       destinationPath: z.string().optional().describe("The local path to download the artifact to. If not provided, returns binary content as base64."),
     },
-    async ({ project, buildId, artifactName, destinationPath }) => {
-      const connection = await connectionProvider();
+    async ({ project, buildId, artifactName, destinationPath }, extra) => {
+      const connection = await connectionProvider(extra);
       const buildApi = await connection.getBuildApi();
       const artifact = await buildApi.getArtifact(project, buildId, artifactName);
 

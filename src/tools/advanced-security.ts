@@ -2,17 +2,17 @@
 // Licensed under the MIT License.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebApi } from "azure-devops-node-api";
 import { AlertType, AlertValidityStatus, Confidence, Severity, State } from "azure-devops-node-api/interfaces/AlertInterfaces.js";
 import { z } from "zod";
 import { getEnumKeys, mapStringArrayToEnum, mapStringToEnum } from "../utils.js";
+import type { ConnectionProvider, TokenProvider } from "../shared/mcp-context.js";
 
 const ADVSEC_TOOLS = {
   get_alerts: "advsec_get_alerts",
   get_alert_details: "advsec_get_alert_details",
 };
 
-function configureAdvSecTools(server: McpServer, _: () => Promise<string>, connectionProvider: () => Promise<WebApi>) {
+function configureAdvSecTools(server: McpServer, _: TokenProvider, connectionProvider: ConnectionProvider) {
   server.tool(
     ADVSEC_TOOLS.get_alerts,
     "Retrieve Advanced Security alerts for a repository.",
@@ -49,9 +49,9 @@ function configureAdvSecTools(server: McpServer, _: () => Promise<string>, conne
       orderBy: z.enum(["id", "firstSeen", "lastSeen", "fixedOn", "severity"]).optional().default("severity").describe("Order results by specified field. Defaults to 'severity'."),
       continuationToken: z.string().optional().describe("Continuation token for pagination."),
     },
-    async ({ project, repository, alertType, states, severities, ruleId, ruleName, toolName, ref, onlyDefaultBranch, confidenceLevels, validity, top, orderBy, continuationToken }) => {
+    async ({ project, repository, alertType, states, severities, ruleId, ruleName, toolName, ref, onlyDefaultBranch, confidenceLevels, validity, top, orderBy, continuationToken }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const alertApi = await connection.getAlertApi();
 
         const isSecretAlert = !alertType || alertType.toLowerCase() === "secret";
@@ -106,9 +106,9 @@ function configureAdvSecTools(server: McpServer, _: () => Promise<string>, conne
       alertId: z.number().describe("The ID of the alert to retrieve details for."),
       ref: z.string().optional().describe("Git reference (branch) to filter the alert."),
     },
-    async ({ project, repository, alertId, ref }) => {
+    async ({ project, repository, alertId, ref }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const alertApi = await connection.getAlertApi();
 
         const result = await alertApi.getAlert(

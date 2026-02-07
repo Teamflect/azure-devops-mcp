@@ -1,0 +1,10 @@
+name = "azure-devops-mcp"
+main = "dist/worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ADO_ORG = "teamblee-devops"
+MCP_HTTP_PATH = "/mcp"
+ADO_AUTH_TYPE = "pat" # per-request PAT
+# keep MCP_STATEFUL unset (or "false") unless you add Durable Objects

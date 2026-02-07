@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebApi } from "azure-devops-node-api";
 import { SuiteExpand, TestPlanCreateParams } from "azure-devops-node-api/interfaces/TestPlanInterfaces.js";
 import { z } from "zod";
+import type { ConnectionProvider, TokenProvider } from "../shared/mcp-context.js";
 
 const Test_Plan_Tools = {
   create_test_plan: "testplan_create_test_plan",
@@ -18,7 +18,7 @@ const Test_Plan_Tools = {
   create_test_suite: "testplan_create_test_suite",
 };
 
-function configureTestPlanTools(server: McpServer, _: () => Promise<string>, connectionProvider: () => Promise<WebApi>) {
+function configureTestPlanTools(server: McpServer, _: TokenProvider, connectionProvider: ConnectionProvider) {
   server.tool(
     Test_Plan_Tools.list_test_plans,
     "Retrieve a paginated list of test plans from an Azure DevOps project. Allows filtering for active plans and toggling detailed information.",
@@ -28,10 +28,10 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       includePlanDetails: z.boolean().default(false).describe("Include detailed information about each test plan."),
       continuationToken: z.string().optional().describe("Token to continue fetching test plans from a previous request."),
     },
-    async ({ project, filterActivePlans, includePlanDetails, continuationToken }) => {
+    async ({ project, filterActivePlans, includePlanDetails, continuationToken }, extra) => {
       try {
         const owner = ""; //making owner an empty string untill we can figure out how to get owner id
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const testPlanApi = await connection.getTestPlanApi();
 
         const testPlans = await testPlanApi.getTestPlans(project, owner, continuationToken, includePlanDetails, filterActivePlans);
@@ -61,9 +61,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       endDate: z.string().optional().describe("The end date of the test plan"),
       areaPath: z.string().optional().describe("The area path for the test plan"),
     },
-    async ({ project, name, iteration, description, startDate, endDate, areaPath }) => {
+    async ({ project, name, iteration, description, startDate, endDate, areaPath }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const testPlanApi = await connection.getTestPlanApi();
 
         const testPlanToCreate: TestPlanCreateParams = {
@@ -99,13 +99,13 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       parentSuiteId: z.number().describe("ID of the parent suite under which the new suite will be created, if not given by user this can be id of a root suite of the test plan"),
       name: z.string().describe("Name of the child test suite"),
     },
-    async ({ project, planId, parentSuiteId, name }) => {
+    async ({ project, planId, parentSuiteId, name }, extra) => {
       const maxRetries = 5;
       const baseDelay = 500; // milliseconds
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          const connection = await connectionProvider();
+          const connection = await connectionProvider(extra);
           const testPlanApi = await connection.getTestPlanApi();
 
           const testSuiteToCreate = {
@@ -160,9 +160,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       suiteId: z.number().describe("The ID of the test suite."),
       testCaseIds: z.string().or(z.array(z.string())).describe("The ID(s) of the test case(s) to add. "),
     },
-    async ({ project, planId, suiteId, testCaseIds }) => {
+    async ({ project, planId, suiteId, testCaseIds }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const testApi = await connection.getTestApi();
 
         // If testCaseIds is an array, convert it to comma-separated string
@@ -200,9 +200,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       iterationPath: z.string().optional().describe("The iteration path for the test case."),
       testsWorkItemId: z.number().optional().describe("Optional work item id that will be set as a Microsoft.VSTS.Common.TestedBy-Reverse link to the test case."),
     },
-    async ({ project, title, steps, priority, areaPath, iterationPath, testsWorkItemId }) => {
+    async ({ project, title, steps, priority, areaPath, iterationPath, testsWorkItemId }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const witClient = await connection.getWorkItemTrackingApi();
 
         let stepsXml;
@@ -288,9 +288,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
           "The steps to reproduce the test case. Make sure to format each step as '1. Step one|Expected result one\n2. Step two|Expected result two. USE '|' as the delimiter between step and expected result. DO NOT use '|' in the description of the step or expected result."
         ),
     },
-    async ({ id, steps }) => {
+    async ({ id, steps }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const witClient = await connection.getWorkItemTrackingApi();
 
         let stepsXml;
@@ -332,9 +332,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       planid: z.number().describe("The ID of the test plan."),
       suiteid: z.number().describe("The ID of the test suite."),
     },
-    async ({ project, planid, suiteid }) => {
+    async ({ project, planid, suiteid }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const coreApi = await connection.getTestPlanApi();
         const testcases = await coreApi.getTestCaseList(project, planid, suiteid);
 
@@ -358,9 +358,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       project: z.string().describe("The unique identifier (ID or name) of the Azure DevOps project."),
       buildid: z.number().describe("The ID of the build."),
     },
-    async ({ project, buildid }) => {
+    async ({ project, buildid }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const coreApi = await connection.getTestResultsApi();
         const testResults = await coreApi.getTestResultDetailsForBuild(project, buildid);
 
@@ -385,9 +385,9 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
       planId: z.number().describe("The ID of the test plan."),
       continuationToken: z.string().optional().describe("Token to continue fetching test plans from a previous request."),
     },
-    async ({ project, planId, continuationToken }) => {
+    async ({ project, planId, continuationToken }, extra) => {
       try {
-        const connection = await connectionProvider();
+        const connection = await connectionProvider(extra);
         const testPlanApi = await connection.getTestPlanApi();
         const expand: SuiteExpand = SuiteExpand.Children;
 

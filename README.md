@@ -125,6 +125,56 @@ Click "Select Tools" and choose the available tools.
 
 Open GitHub Copilot Chat and try a prompt like `List ADO projects`. The first time an ADO tool is executed browser will open prompting to login with your Microsoft account. Please ensure you are using credentials matching selected Azure DevOps organization.
 
+## 🌐 Streamable HTTP (Remote)
+
+This server supports the MCP Streamable HTTP transport for remote hosting (for example, behind a reverse proxy or on a cloud platform).
+
+Server-level PAT (single token for the server):
+
+```sh
+ADO_MCP_AUTH_TOKEN="<PAT>" npx -y @azure-devops/mcp <org> --transport http --authentication envvar --http-port 3000 --http-path /mcp
+```
+
+Per-request PAT (each client provides its own token):
+
+```sh
+npx -y @azure-devops/mcp <org> --transport http --authentication pat --http-port 3000 --http-path /mcp
+```
+
+Clients should send `Authorization: Bearer <PAT>` (or `Authorization: Basic base64(:PAT)`) to the `/mcp` endpoint.
+
+Optional DNS rebinding protection can be enabled with `--http-allowed-origins`, `--http-allowed-hosts`, and `--http-enable-dns-rebinding-protection`.
+
+## ☁️ Cloudflare Worker (Remote)
+
+This repo includes a Cloudflare Worker entrypoint at `src/worker.ts` that serves the Streamable HTTP endpoint via the Fetch API.
+
+Example `wrangler.toml`:
+
+```toml
+name = "azure-devops-mcp"
+main = "dist/worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ADO_ORG = "contoso"
+MCP_HTTP_PATH = "/mcp"
+ADO_AUTH_TYPE = "pat" # or "envvar" for server-level PAT
+```
+
+Then set a secret PAT:
+
+```sh
+wrangler secret put ADO_PAT
+```
+
+Clients should send `Authorization: Bearer <PAT>` to `/mcp`.
+
+## ✅ Tooling Scope
+
+Only Work Item tools are registered by default. Other tool modules remain in the codebase but are not exposed.
+
 > 💥 We strongly recommend creating a `.github\copilot-instructions.md` in your project. This will enhance your experience using the Azure DevOps MCP Server with GitHub Copilot Chat.
 > To start, just include "`This project uses Azure DevOps. Always check to see if the Azure DevOps MCP server has a tool relevant to the user's request`" in your copilot instructions file.
 

@@ -92,6 +92,12 @@ function createAuthenticator(type: string, tenantId?: string): () => Promise<str
         return token;
       };
 
+    case "pat":
+      logger.debug(`Authenticator: Using PAT authentication from HTTP Authorization header`);
+      return async () => {
+        throw new Error("PAT authentication requires an HTTP Authorization header when using Streamable HTTP.");
+      };
+
     case "azcli":
     case "env":
       if (type !== "env") {
