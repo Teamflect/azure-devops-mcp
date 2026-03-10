@@ -51,5 +51,7 @@ module.exports = {
     "^(.+)/utils\\.js$": "$1/utils.ts",
     "^(.+)/auth\\.js$": "$1/auth.ts",
     "^(.+)/logger\\.js$": "$1/logger.ts",
+    "^(.+)/shared/(.+)\\.js$": "$1/shared/$2.ts",
+    "^(.+)/transport/(.+)\\.js$": "$1/transport/$2.ts",
   },
 };

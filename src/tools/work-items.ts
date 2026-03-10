@@ -10,6 +10,7 @@ import type { ConnectionProvider, TokenProvider } from "../shared/mcp-context.js
 
 const WORKITEM_TOOLS = {
   my_work_items: "wit_my_work_items",
+  search_work_items: "wit_search_work_items",
   list_backlogs: "wit_list_backlogs",
   list_backlog_work_items: "wit_list_backlog_work_items",
   get_work_item: "wit_get_work_item",
@@ -38,6 +39,18 @@ const WIT_API_VERSION = "7.1";
 const WIT_QUERY_API_VERSION = "7.1-preview.2";
 const WORK_ITEM_EXPAND_ENUM = ["None", "Relations", "Fields", "Links", "All"] as const;
 const QUERY_EXPAND_ENUM = ["None", "Wiql", "Clauses", "All", "Minimal"] as const;
+const SEARCH_WORK_ITEMS_SORT_FIELD_ENUM = ["changedDate", "createdDate", "id"] as const;
+const SEARCH_WORK_ITEMS_SORT_DIRECTION_ENUM = ["desc", "asc"] as const;
+const DEFAULT_WORK_ITEM_FIELDS = ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.AssignedTo", "System.ChangedDate", "System.CreatedDate"];
+const IDENTITY_FIELDS = [
+  "System.AssignedTo",
+  "System.CreatedBy",
+  "System.ChangedBy",
+  "System.AuthorizedAs",
+  "Microsoft.VSTS.Common.ActivatedBy",
+  "Microsoft.VSTS.Common.ResolvedBy",
+  "Microsoft.VSTS.Common.ClosedBy",
+];
 
 interface WorkItemRelation {
   rel?: string;
@@ -73,6 +86,45 @@ function getLinkTypeFromName(name: string) {
     default:
       throw new Error(`Unknown link type: ${name}`);
   }
+}
+
+function escapeWiqlString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function buildWiqlEqualityCondition(fieldName: string, values?: string[]): string | undefined {
+  const normalizedValues = values?.map((value) => value.trim()).filter((value) => value.length > 0);
+  if (!normalizedValues || normalizedValues.length === 0) {
+    return undefined;
+  }
+
+  if (normalizedValues.length === 1) {
+    return `[${fieldName}] = '${escapeWiqlString(normalizedValues[0])}'`;
+  }
+
+  return `[${fieldName}] IN (${normalizedValues.map((value) => `'${escapeWiqlString(value)}'`).join(", ")})`;
+}
+
+function formatIdentityFieldsInWorkItemBatchResponse(response: { value?: { fields?: Record<string, unknown> }[] }): void {
+  const workitems = response.value ?? [];
+  if (!Array.isArray(workitems)) {
+    return;
+  }
+
+  workitems.forEach((item) => {
+    if (!item.fields) {
+      return;
+    }
+
+    IDENTITY_FIELDS.forEach((fieldName) => {
+      if (item.fields && item.fields[fieldName] && typeof item.fields[fieldName] === "object") {
+        const identityField = item.fields[fieldName] as { displayName?: string; uniqueName?: string };
+        const name = identityField.displayName || "";
+        const email = identityField.uniqueName || "";
+        item.fields[fieldName] = `${name} <${email}>`.trim();
+      }
+    });
+  });
 }
 
 function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider, connectionProvider: ConnectionProvider, userAgentProvider: () => string, authScheme: AuthScheme) {
@@ -285,6 +337,98 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
   );
 
   server.tool(
+    WORKITEM_TOOLS.search_work_items,
+    "Search or get the latest work items by work item type and other filters. Use this for requests like 'get the latest 200 Response bugs' or 'search for the latest Bugs'.",
+    {
+      workItemType: z.array(z.string()).optional().describe("Filter by exact work item type names. Supports names with spaces, for example 'Response bugs'."),
+      state: z.array(z.string()).optional().describe("Filter by exact work item states."),
+      assignedTo: z.array(z.string()).optional().describe("Filter by assigned-to users. Use exact display names or emails when possible."),
+      areaPath: z.array(z.string()).optional().describe("Filter by exact area paths."),
+      fields: z.array(z.string()).optional().describe("Optional list of fields to include. Defaults to a compact work-item summary field set."),
+      sortBy: z.enum(SEARCH_WORK_ITEMS_SORT_FIELD_ENUM).default("changedDate").describe("Sort field to use when the user asks for the latest work items. Defaults to 'changedDate'."),
+      sortDirection: z.enum(SEARCH_WORK_ITEMS_SORT_DIRECTION_ENUM).default("desc").describe("Sort direction. Use 'desc' for latest/newest requests and 'asc' for oldest."),
+      skip: z.number().default(0).describe("Number of matching work items to skip for pagination."),
+      top: z.number().default(50).describe("Maximum number of matching work items to return."),
+    },
+    async ({ workItemType, state, assignedTo, areaPath, fields, sortBy, sortDirection, skip, top }, extra) => {
+      const project = FIXED_PROJECT_NAME;
+      try {
+        const conditions = ["[System.TeamProject] = @project"];
+        const workItemTypeCondition = buildWiqlEqualityCondition("System.WorkItemType", workItemType);
+        const stateCondition = buildWiqlEqualityCondition("System.State", state);
+        const assignedToCondition = buildWiqlEqualityCondition("System.AssignedTo", assignedTo);
+        const areaPathCondition = buildWiqlEqualityCondition("System.AreaPath", areaPath);
+
+        if (workItemTypeCondition) conditions.push(workItemTypeCondition);
+        if (stateCondition) conditions.push(stateCondition);
+        if (assignedToCondition) conditions.push(assignedToCondition);
+        if (areaPathCondition) conditions.push(areaPathCondition);
+
+        const sortFieldMap = {
+          changedDate: "System.ChangedDate",
+          createdDate: "System.CreatedDate",
+          id: "System.Id",
+        } as const;
+        const wiqlQuery = `Select [System.Id] From WorkItems Where ${conditions.join(" And ")} Order By [${sortFieldMap[sortBy]}] ${sortDirection}`;
+        const wiqlResult = await requestAdoJson<{ workItems?: { id?: number }[] }>(extra, `/${encodeURIComponent(project)}/_apis/wit/wiql`, {
+          method: "POST",
+          apiVersion: WIT_API_VERSION,
+          body: { query: wiqlQuery },
+        });
+
+        const matchedIds = (wiqlResult.workItems ?? []).map((item) => item.id).filter((id): id is number => id !== undefined);
+        const pageIds = matchedIds.slice(skip, skip + top);
+        if (pageIds.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ count: 0, totalMatches: matchedIds.length, skip, top, value: [] }, null, 2),
+              },
+            ],
+          };
+        }
+
+        const workItemsResponse = await requestAdoJson<{ count?: number; value?: { fields?: Record<string, unknown> }[] }>(extra, `/${encodeURIComponent(project)}/_apis/wit/workitemsbatch`, {
+          method: "POST",
+          apiVersion: WIT_API_VERSION,
+          body: {
+            ids: pageIds,
+            fields: !fields || fields.length === 0 ? DEFAULT_WORK_ITEM_FIELDS : fields,
+          },
+        });
+
+        formatIdentityFieldsInWorkItemBatchResponse(workItemsResponse);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  count: workItemsResponse.count ?? workItemsResponse.value?.length ?? 0,
+                  totalMatches: matchedIds.length,
+                  skip,
+                  top,
+                  value: workItemsResponse.value ?? [],
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+        return {
+          content: [{ type: "text", text: `Error searching work items: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
     WORKITEM_TOOLS.get_work_items_batch_by_ids,
     "Retrieve list of work items by IDs in batch.",
     {
@@ -305,34 +449,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
           body: { ids, fields: fieldsToUse },
         });
 
-        // List of identity fields that need to be transformed from objects to formatted strings
-        const identityFields = [
-          "System.AssignedTo",
-          "System.CreatedBy",
-          "System.ChangedBy",
-          "System.AuthorizedAs",
-          "Microsoft.VSTS.Common.ActivatedBy",
-          "Microsoft.VSTS.Common.ResolvedBy",
-          "Microsoft.VSTS.Common.ClosedBy",
-        ];
-
-        // Format identity fields to include displayName and uniqueName
-        // Removing the identity object as the response. It's too much and not needed
-        const workitems = workitemsResponse.value ?? [];
-        if (Array.isArray(workitems)) {
-          workitems.forEach((item) => {
-            if (item.fields) {
-              identityFields.forEach((fieldName) => {
-                if (item.fields && item.fields[fieldName] && typeof item.fields[fieldName] === "object") {
-                  const identityField = item.fields[fieldName] as { displayName?: string; uniqueName?: string };
-                  const name = identityField.displayName || "";
-                  const email = identityField.uniqueName || "";
-                  item.fields[fieldName] = `${name} <${email}>`.trim();
-                }
-              });
-            }
-          });
-        }
+        formatIdentityFieldsInWorkItemBatchResponse(workitemsResponse);
 
         return {
           content: [{ type: "text", text: JSON.stringify(workitemsResponse, null, 2) }],
@@ -790,9 +907,9 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
 
   server.tool(
     WORKITEM_TOOLS.get_work_item_type,
-    "Get a specific work item type.",
+    "Get metadata for a specific work item type definition, such as its fields and states. Do not use this to list work items of that type.",
     {
-      workItemType: z.string().describe("The name of the work item type to retrieve."),
+      workItemType: z.string().describe("The exact work item type name whose definition you want to inspect."),
     },
     async ({ workItemType }, extra) => {
       const project = FIXED_PROJECT_NAME;
@@ -876,7 +993,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
 
   server.tool(
     WORKITEM_TOOLS.get_query,
-    "Get a query by its ID or path.",
+    "Get metadata for a saved work item query by its ID or path. Do not use this for ad hoc latest/search requests.",
     {
       query: z.string().describe("The ID or path of the query to retrieve."),
       expand: z.enum(QUERY_EXPAND_ENUM).optional().describe("Optional expand parameter to include additional details in the response. Defaults to 'None'."),
@@ -918,9 +1035,9 @@ function configureWorkItemTools(server: McpServer, tokenProvider: TokenProvider,
 
   server.tool(
     WORKITEM_TOOLS.get_query_results_by_id,
-    "Retrieve the results of a work item query given the query ID. Supports full or IDs-only response types.",
+    "Execute a saved work item query by its query ID. Use this only when you already have a query ID, not for ad hoc requests like 'get the latest bugs'. Supports full or IDs-only response types.",
     {
-      id: z.string().describe("The ID of the query to retrieve results for."),
+      id: z.string().describe("The ID of the saved query to execute."),
       team: z.string().optional().describe("The name or ID of the Azure DevOps team. If not provided, the default team will be used."),
       timePrecision: z.boolean().optional().describe("Whether to include time precision in the results. Defaults to false."),
       top: z.number().default(50).describe("The maximum number of results to return. Defaults to 50."),

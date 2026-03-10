@@ -269,6 +269,138 @@ describe("configureWorkItemTools", () => {
     });
   });
 
+  describe("search_work_items tool", () => {
+    it("should return the latest work items for a work item type with spaces in its name", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_search_work_items");
+      if (!call) throw new Error("wit_search_work_items tool not registered");
+      const [, , , handler] = call;
+
+      mockConnection.serverUrl = "https://dev.azure.com/contoso";
+      (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
+
+      const mockFetch = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            workItems: [{ id: 301 }, { id: 300 }, { id: 299 }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            count: 3,
+            value: [
+              {
+                fields: {
+                  "System.Id": 301,
+                  "System.WorkItemType": "Response bugs",
+                  "System.Title": "Newest response bug",
+                  "System.AssignedTo": {
+                    displayName: "Jane Doe",
+                    uniqueName: "jane.doe@example.com",
+                  },
+                },
+              },
+              {
+                fields: {
+                  "System.Id": 300,
+                  "System.WorkItemType": "Response bugs",
+                  "System.Title": "Older response bug",
+                  "System.AssignedTo": {
+                    displayName: "John Doe",
+                    uniqueName: "john.doe@example.com",
+                  },
+                },
+              },
+              {
+                fields: {
+                  "System.Id": 299,
+                  "System.WorkItemType": "Response bugs",
+                  "System.Title": "Oldest response bug",
+                },
+              },
+            ],
+          }),
+        });
+      global.fetch = mockFetch as unknown as typeof fetch;
+
+      const result = await handler({
+        workItemType: ["Response bugs"],
+        sortBy: "changedDate",
+        sortDirection: "desc",
+        top: 200,
+        skip: 0,
+      });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        "https://dev.azure.com/contoso/Teamflect/_apis/wit/wiql?api-version=7.1",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "Authorization": "Bearer fake-token",
+            "Content-Type": "application/json",
+          }),
+          body: JSON.stringify({
+            query: "Select [System.Id] From WorkItems Where [System.TeamProject] = @project And [System.WorkItemType] = 'Response bugs' Order By [System.ChangedDate] desc",
+          }),
+        })
+      );
+
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        "https://dev.azure.com/contoso/Teamflect/_apis/wit/workitemsbatch?api-version=7.1",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "Authorization": "Bearer fake-token",
+            "Content-Type": "application/json",
+          }),
+          body: JSON.stringify({
+            ids: [301, 300, 299],
+            fields: ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.AssignedTo", "System.ChangedDate", "System.CreatedDate"],
+          }),
+        })
+      );
+
+      const parsedResult = JSON.parse(result.content[0].text);
+      expect(parsedResult.count).toBe(3);
+      expect(parsedResult.totalMatches).toBe(3);
+      expect(parsedResult.value[0].fields["System.AssignedTo"]).toBe("Jane Doe <jane.doe@example.com>");
+      expect(parsedResult.value[1].fields["System.AssignedTo"]).toBe("John Doe <john.doe@example.com>");
+    });
+
+    it("should handle search_work_items errors", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_search_work_items");
+      if (!call) throw new Error("wit_search_work_items tool not registered");
+      const [, , , handler] = call;
+
+      mockConnection.serverUrl = "https://dev.azure.com/contoso";
+      (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
+
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+        text: jest.fn().mockResolvedValue("query failed"),
+      }) as unknown as typeof fetch;
+
+      const result = await handler({
+        workItemType: ["Response bugs"],
+        top: 200,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("Error searching work items");
+      expect(result.content[0].text).toContain("500 Server Error: query failed");
+    });
+  });
+
   describe("getWorkItemsBatch tool", () => {
     it("should call workItemApi.getWorkItemsBatch API with the correct parameters and return the expected result", async () => {
       configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
