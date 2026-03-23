@@ -135,6 +135,8 @@ Server-level PAT (single token for the server):
 ADO_MCP_AUTH_TOKEN="<PAT>" npx -y @azure-devops/mcp <org> --transport http --authentication envvar --http-port 3000 --http-path /mcp
 ```
 
+`ADO_PAT` is also accepted as a fallback if `ADO_MCP_AUTH_TOKEN` is not set.
+
 Per-request PAT (each client provides its own token):
 
 ```sh
@@ -142,6 +144,9 @@ npx -y @azure-devops/mcp <org> --transport http --authentication pat --http-port
 ```
 
 Clients should send `Authorization: Bearer <PAT>` (or `Authorization: Basic base64(:PAT)`) to the `/mcp` endpoint.
+If the client does not send a Bearer token, the server falls back to `ADO_MCP_AUTH_TOKEN`, then `ADO_PAT`.
+
+If a client cannot send headers, the server also accepts a PAT in the MCP URL query string via `?pat=<PAT>` (or `?ado_pat=<PAT>`). Header-based auth is preferred because query-string tokens are more likely to end up in logs, browser history, and shared URLs.
 
 Optional DNS rebinding protection can be enabled with `--http-allowed-origins`, `--http-allowed-hosts`, and `--http-enable-dns-rebinding-protection`.
 

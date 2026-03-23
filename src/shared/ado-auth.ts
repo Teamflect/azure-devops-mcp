@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { Buffer } from "node:buffer";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
 export type AuthScheme = "bearer" | "pat";
 
@@ -17,6 +18,27 @@ export function formatAuthorizationHeader(token: string, scheme: AuthScheme): st
     return `Basic ${encoded}`;
   }
   return `Bearer ${token}`;
+}
+
+export function resolvePatToken(...candidates: Array<string | null | undefined>): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+export function getPatTokenFromUrl(url: URL): string | undefined {
+  return resolvePatToken(url.searchParams.get("pat"), url.searchParams.get("ado_pat"));
+}
+
+export function createPatAuthInfo(token: string, clientId = "query-param"): AuthInfo {
+  return {
+    token,
+    clientId,
+    scopes: [],
+  };
 }
 
 export function parseAuthorizationHeader(headerValue: string | null | undefined): string | undefined {

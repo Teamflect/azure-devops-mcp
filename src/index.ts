@@ -4,6 +4,7 @@
 // Licensed under the MIT License.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { getBearerHandler, getPersonalAccessTokenHandler, WebApi } from "azure-devops-node-api";
@@ -20,7 +21,7 @@ import { configureAllTools } from "./tools.js";
 import { UserAgentComposer } from "./useragent.js";
 import { packageVersion } from "./version.js";
 import { DomainsManager } from "./shared/domains.js";
-import { resolveAuthScheme } from "./shared/ado-auth.js";
+import { createPatAuthInfo, getPatTokenFromUrl, resolveAuthScheme, resolvePatToken } from "./shared/ado-auth.js";
 import type { ConnectionProvider, McpRequestExtra, TokenProvider } from "./shared/mcp-context.js";
 
 function isGitHubCodespaceEnv(): boolean {
@@ -173,16 +174,23 @@ async function main() {
   // configurePrompts(server);
 
   const tokenProvider: TokenProvider = async (extra?: McpRequestExtra) => {
-    const tokenFromRequest = extra?.authInfo?.token;
-    if (tokenFromRequest) {
-      return tokenFromRequest;
-    }
+    const requestToken = extra?.authInfo?.token;
     if (argv.authentication === "pat") {
-      const token = process.env["ADO_MCP_AUTH_TOKEN"];
+      const token = resolvePatToken(requestToken, process.env["ADO_MCP_AUTH_TOKEN"], process.env["ADO_PAT"]);
       if (token) {
         return token;
       }
-      throw new Error("Missing Authorization header for PAT authentication and ADO_MCP_AUTH_TOKEN env var.");
+      throw new Error("Missing MCP Bearer token and ADO_MCP_AUTH_TOKEN/ADO_PAT env vars for PAT authentication.");
+    }
+    if (requestToken) {
+      return requestToken;
+    }
+    if (argv.authentication === "envvar") {
+      const token = resolvePatToken(process.env["ADO_MCP_AUTH_TOKEN"], process.env["ADO_PAT"]);
+      if (token) {
+        return token;
+      }
+      throw new Error("Missing ADO_MCP_AUTH_TOKEN/ADO_PAT env vars for envvar authentication.");
     }
     return authenticator();
   };
@@ -211,6 +219,12 @@ async function main() {
           res.writeHead(404).end("Not Found");
           return;
         }
+
+        const queryPat = getPatTokenFromUrl(url);
+        if (queryPat) {
+          (req as typeof req & { auth?: AuthInfo }).auth = createPatAuthInfo(queryPat);
+        }
+
         await transport.handleRequest(req, res);
       } catch (error) {
         logger.error("HTTP transport error", error);

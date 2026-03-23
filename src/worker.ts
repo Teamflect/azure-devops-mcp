@@ -8,7 +8,7 @@ import { configureAllTools } from "./tools.js";
 import { UserAgentComposer } from "./useragent.js";
 import { packageVersion } from "./version.js";
 import { logger } from "./logger.js";
-import { resolveAuthScheme } from "./shared/ado-auth.js";
+import { createPatAuthInfo, getPatTokenFromUrl, resolveAuthScheme, resolvePatToken } from "./shared/ado-auth.js";
 import type { ConnectionProvider, McpRequestExtra, TokenProvider } from "./shared/mcp-context.js";
 import { StreamableHttpFetchTransport } from "./transport/streamable-http-fetch.js";
 import { createClientSecretTokenProvider } from "./shared/client-secret-auth.js";
@@ -67,12 +67,8 @@ async function initWorker(env: Env): Promise<WorkerState> {
   const clientSecretTokenProvider = authenticationType === "clientsecret" && tenantId && clientId && clientSecret ? createClientSecretTokenProvider(tenantId, clientId, clientSecret) : undefined;
 
   const tokenProvider: TokenProvider = async (extra?: McpRequestExtra) => {
-    const tokenFromRequest = extra?.authInfo?.token;
-    if (tokenFromRequest) {
-      return tokenFromRequest;
-    }
     if (authenticationType === "envvar") {
-      const token = getEnvValue(env, "ADO_MCP_AUTH_TOKEN") ?? getEnvValue(env, "ADO_PAT");
+      const token = resolvePatToken(extra?.authInfo?.token, getEnvValue(env, "ADO_MCP_AUTH_TOKEN"), getEnvValue(env, "ADO_PAT"));
       if (!token) {
         throw new Error("Missing ADO_MCP_AUTH_TOKEN/ADO_PAT for envvar authentication.");
       }
@@ -85,12 +81,17 @@ async function initWorker(env: Env): Promise<WorkerState> {
       return clientSecretTokenProvider();
     }
     if (authenticationType === "pat") {
-      const token = getEnvValue(env, "ADO_MCP_AUTH_TOKEN") ?? getEnvValue(env, "ADO_PAT");
+      const token = resolvePatToken(extra?.authInfo?.token, getEnvValue(env, "ADO_MCP_AUTH_TOKEN"), getEnvValue(env, "ADO_PAT"));
       if (token) {
         return token;
       }
+      throw new Error("Missing MCP Bearer token and ADO_MCP_AUTH_TOKEN/ADO_PAT env vars for PAT authentication.");
     }
-    throw new Error("Missing Authorization header for PAT authentication.");
+    const tokenFromRequest = extra?.authInfo?.token;
+    if (tokenFromRequest) {
+      return tokenFromRequest;
+    }
+    throw new Error("Missing authorization token.");
   };
 
   const userAgentComposer = new UserAgentComposer(packageVersion);
@@ -150,7 +151,8 @@ export default {
     }
 
     try {
-      return await state.transport.handleRequest(request);
+      const queryPat = getPatTokenFromUrl(url);
+      return await state.transport.handleRequest(request, queryPat ? createPatAuthInfo(queryPat) : undefined);
     } catch (error) {
       logger.error("HTTP transport error", error);
       return new Response("Internal Server Error", { status: 500 });

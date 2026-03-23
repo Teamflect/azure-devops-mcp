@@ -6,6 +6,7 @@ import { AccountInfo, AuthenticationResult, PublicClientApplication } from "@azu
 import open from "open";
 import { logger } from "./logger.js";
 import { createClientSecretTokenProvider } from "./shared/client-secret-auth.js";
+import { resolvePatToken } from "./shared/ado-auth.js";
 
 const scopes = ["499b84ac-1321-427f-aa17-267ca6975798/.default"];
 
@@ -80,16 +81,15 @@ function createAuthenticator(type: string, tenantId?: string): () => Promise<str
   logger.debug(`Creating authenticator of type '${type}' with tenantId='${tenantId ?? "undefined"}'`);
   switch (type) {
     case "envvar":
-      logger.debug(`Authenticator: Using environment variable authentication (ADO_MCP_AUTH_TOKEN)`);
-      // Read token from fixed environment variable
+      logger.debug(`Authenticator: Using environment variable authentication (ADO_MCP_AUTH_TOKEN -> ADO_PAT fallback)`);
       return async () => {
-        logger.debug(`${type}: Reading token from ADO_MCP_AUTH_TOKEN environment variable`);
-        const token = process.env["ADO_MCP_AUTH_TOKEN"];
+        logger.debug(`${type}: Reading token from ADO_MCP_AUTH_TOKEN with ADO_PAT fallback`);
+        const token = resolvePatToken(process.env["ADO_MCP_AUTH_TOKEN"], process.env["ADO_PAT"]);
         if (!token) {
-          logger.error(`${type}: ADO_MCP_AUTH_TOKEN environment variable is not set or empty`);
-          throw new Error("Environment variable 'ADO_MCP_AUTH_TOKEN' is not set or empty. Please set it with a valid Azure DevOps Personal Access Token.");
+          logger.error(`${type}: Neither ADO_MCP_AUTH_TOKEN nor ADO_PAT is set`);
+          throw new Error("Environment variables 'ADO_MCP_AUTH_TOKEN' and 'ADO_PAT' are not set or are empty. Please set one with a valid Azure DevOps Personal Access Token.");
         }
-        logger.debug(`${type}: Successfully retrieved token from environment variable`);
+        logger.debug(`${type}: Successfully retrieved token from environment variables`);
         return token;
       };
 
