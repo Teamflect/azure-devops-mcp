@@ -3,7 +3,9 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import { Domain } from "./shared/domains.js";
 import { configureWorkItemTools } from "./tools/work-items.js";
+import { configureWikiTools } from "./tools/wiki.js";
 import type { AuthScheme } from "./shared/ado-auth.js";
 import type { ConnectionProvider, TokenProvider } from "./shared/mcp-context.js";
 
@@ -12,10 +14,16 @@ function configureAllTools(
   tokenProvider: TokenProvider,
   connectionProvider: ConnectionProvider,
   userAgentProvider: () => string,
-  _enabledDomains: Set<string>,
+  enabledDomains: Set<string>,
   authScheme: AuthScheme
 ) {
-  configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider, authScheme);
+  if (enabledDomains.has(Domain.WORK_ITEMS)) {
+    configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider, authScheme);
+  }
+
+  if (enabledDomains.has(Domain.WIKI)) {
+    configureWikiTools(server, tokenProvider, connectionProvider, userAgentProvider, authScheme);
+  }
 }
 
 export { configureAllTools };

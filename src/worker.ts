@@ -119,7 +119,7 @@ async function initWorker(env: Env): Promise<WorkerState> {
     userAgentComposer.appendMcpClientInfo(server.server.getClientVersion());
   };
 
-  configureAllTools(server, tokenProvider, connectionProvider, () => userAgentComposer.userAgent, new Set(["work-items"]), authScheme);
+  configureAllTools(server, tokenProvider, connectionProvider, () => userAgentComposer.userAgent, new Set(["work-items", "wiki"]), authScheme);
 
   const transport = new StreamableHttpFetchTransport({
     sessionIdGenerator: getEnvValue(env, "MCP_STATEFUL") === "true" ? () => crypto.randomUUID() : undefined,
